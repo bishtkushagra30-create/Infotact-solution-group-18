@@ -31,3 +31,7 @@ Never copy `.env` files into Git or share their contents. The handover's databas
 - Fixed test database and Redis connection cleanup.
 - Executed the complete backend test suite: 65 passed, 0 failed.
 - Verified the integration changes on the dedicated Git feature branch.
+
+## Git Contribution Attribution
+
+The repository-local Git author identity has been updated to match the verified email associated with the connected GitHub account. Future commits will use this identity for correct contribution attribution.
