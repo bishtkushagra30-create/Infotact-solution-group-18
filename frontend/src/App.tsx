@@ -367,10 +367,84 @@ function Signup() {
     </div>
   )
 }
-
+type NotificationItem = {
+  id: number
+  title: string
+  message: string
+  time: string
+  read: boolean
+  type: string
+}
 
 function Shell() {
   const profile = getDemoProfile()
+    const [notifications, setNotifications] = useState<NotificationItem[]>(() => {
+    const saved = localStorage.getItem('ledgerguard-notifications')
+
+    if (saved) {
+      try {
+        return JSON.parse(saved)
+      } catch {
+        localStorage.removeItem('ledgerguard-notifications')
+      }
+    }
+
+    return [
+      {
+        id: 1,
+        title: 'Billing report is ready',
+        message: 'Your latest billing summary is available.',
+        time: 'Just now',
+        read: false,
+        type: 'billing',
+      },
+      {
+        id: 2,
+        title: 'Transaction monitoring active',
+        message: 'Transaction monitoring is running normally.',
+        time: 'Today',
+        read: false,
+        type: 'system',
+      },
+      {
+        id: 3,
+        title: 'Workspace security update',
+        message: 'Your workspace session is authenticated.',
+        time: 'Today',
+        read: true,
+        type: 'security',
+      },
+    ]
+  })
+
+  const [notificationOpen, setNotificationOpen] = useState(false)
+
+  useEffect(() => {
+    localStorage.setItem(
+      'ledgerguard-notifications',
+      JSON.stringify(notifications)
+    )
+  }, [notifications])
+
+  const unreadCount = notifications.filter((item) => !item.read).length
+
+  function markNotificationRead(id: number) {
+    setNotifications((items) =>
+      items.map((item) =>
+        item.id === id ? { ...item, read: true } : item
+      )
+    )
+  }
+
+  function markAllNotificationsRead() {
+    setNotifications((items) =>
+      items.map((item) => ({ ...item, read: true }))
+    )
+  }
+
+  function clearNotifications() {
+    setNotifications([])
+  }
 
      const go = useNavigate()
 
@@ -477,14 +551,77 @@ function Shell() {
 
              <span>Workspace <i>/</i> <b>LedgerGuard</b></span>
 
-             <div>
+            <div className="topbar-actions">
+  <label className="demo-pill">● Authenticated session</label>
 
-               <label className="demo-pill">● Authenticated session</label>
+  <div className="notification-wrap">
+    <button
+      className="notification-trigger"
+      type="button"
+      aria-label={`Notifications: ${unreadCount} unread`}
+      aria-expanded={notificationOpen}
+      onClick={() => setNotificationOpen((open) => !open)}
+    >
+      🔔
+      {unreadCount > 0 && (
+        <span className="notification-count">{unreadCount}</span>
+      )}
+    </button>
 
-               <span className="avatar">AS</span>
+    {notificationOpen && (
+      <section className="notification-panel">
+        <div className="notification-panel-head">
+          <div>
+            <strong>Notifications</strong>
+            <small>{unreadCount} unread · Sample activity</small>
+          </div>
+          <button
+            type="button"
+            onClick={markAllNotificationsRead}
+            disabled={unreadCount === 0}
+          >
+            Mark all read
+          </button>
+        </div>
 
-             </div>
+        {notifications.length > 0 ? (
+          <ul className="notification-list">
+            {notifications.map((item) => (
+              <li key={item.id} className={item.read ? 'is-read' : 'is-unread'}>
+                <button
+                  type="button"
+                  className="notification-item"
+                  onClick={() => markNotificationRead(item.id)}
+                >
+                  <span className="notification-dot" />
+                  <span className="notification-copy">
+                    <strong>{item.title}</strong>
+                    <small>{item.message}</small>
+                    <time>{item.time}</time>
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <div className="notification-empty">
+            You're all caught up!
+          </div>
+        )}
 
+        {notifications.length > 0 && (
+          <div className="notification-panel-foot">
+            <button type="button" onClick={clearNotifications}>
+              Clear all
+            </button>
+          </div>
+        )}
+      </section>
+    )}
+  </div>
+
+  <span className="avatar">AS</span>
+</div> 
            </header>
 
            <div className="content"><Outlet /></div>
