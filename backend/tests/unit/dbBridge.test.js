@@ -1,7 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import {
+// Configure a placeholder database URI before importing the database module.
+process.env.NODE_ENV = "test";
+process.env.MONGODB_URI =
+  "mongodb://127.0.0.1:27017/ledgerguard_test_placeholder";
+
+const {
   getPlatformConnection,
   getTenantConnection,
   closeDatabaseConnections,
@@ -14,8 +19,7 @@ import {
   assertMatchingRequestHash,
   checkDatabaseHealth,
   checkTenantDatabasesHealth
-} from "../../src/config/db.js";
-
+} = await import("../../src/config/db.js");
 test("Database Bridge: exports all required functions, models, and helpers", () => {
   assert.equal(typeof getPlatformConnection, "function", "getPlatformConnection should be a function");
   assert.equal(typeof getTenantConnection, "function", "getTenantConnection should be a function");
@@ -66,7 +70,10 @@ test("Database Bridge: checkDatabaseHealth reports unconfigured when placeholder
   const health = await checkDatabaseHealth();
   assert.ok(health);
   assert.equal(health.status, "unconfigured");
-  assert.equal(health.platformDb, "platform_db");
+  assert.equal(
+  health.platformDb,
+  process.env.PLATFORM_DB_NAME || "platform_db"
+);
 });
 
 test("Database Bridge: checkTenantDatabasesHealth reports unconfigured when placeholder URI is used", async () => {

@@ -1,8 +1,10 @@
-import test from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import request from "supertest";
 import app from "../../src/app.js";
 import { generateToken, generatePlatformAdminToken } from "../../src/services/auth.service.js";
+import { closeDatabaseConnections } from "../../src/config/db.js";
+import { closeRedisConnection } from "../../src/config/redis.js";
 
 test("Auth Routes: POST /api/v1/auth/register rejects unauthenticated public registration", async () => {
   const res = await request(app)
@@ -182,4 +184,8 @@ test("Tenant Middleware: Cross-tenant access violation is prevented with HTTP 40
   assert.equal(res.status, 403);
   assert.equal(res.body.code, "TENANT_ACCESS_DENIED");
   assert.match(res.body.message, /Cross-tenant access violation/);
+});
+after(async () => {
+  await closeDatabaseConnections();
+  await closeRedisConnection();
 });

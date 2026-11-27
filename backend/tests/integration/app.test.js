@@ -1,7 +1,14 @@
-import test from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import request from "supertest";
 import app from "../../src/app.js";
+import { closeDatabaseConnections } from "../../src/config/db.js";
+import { closeRedisConnection } from "../../src/config/redis.js";
+
+after(async () => {
+  await closeDatabaseConnections();
+  await closeRedisConnection();
+});
 
 test("App Integration: GET /health returns 200 with distinguishable app and db status", async () => {
   const res = await request(app).get("/health");

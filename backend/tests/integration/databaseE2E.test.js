@@ -1,4 +1,4 @@
-import test from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import request from "supertest";
 import app from "../../src/app.js";
@@ -33,6 +33,10 @@ const isAtlasConfigured = Boolean(
   !process.env.MONGODB_URI.includes("<username>") &&
   !process.env.MONGODB_URI.includes("placeholder")
 );
+
+after(async () => {
+  await closeDatabaseConnections();
+});
 
 test("E2E Database: 1. Backend imports database models and connection manager correctly", () => {
   assert.equal(typeof getPlatformConnection, "function");

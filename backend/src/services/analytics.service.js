@@ -4,28 +4,63 @@
  * Runs aggregation pipelines over the double-entry ledger and usage records
  * for financial reporting, trial balances, and meter consumption analysis.
  */
-import { getLedgerEntryModel, getBillingTransactionModel, getUsageRecordModel } from "../config/db.js";
+import {
+  getLedgerEntryModel,
+  getBillingTransactionModel,
+  getUsageRecordModel
+} from "../config/db.js";
+
+export const CANONICAL_METRICS = [
+  { metricType: "api_requests", defaultUnit: "requests", label: "API requests" },
+  { metricType: "compute_units", defaultUnit: "compute_units", label: "Compute units" },
+  { metricType: "storage", defaultUnit: "GB-day", label: "Storage" }
+];
+
+function normalizeCurrency(currency = "INR") {
+  const normalized = String(currency || "INR").trim().toUpperCase();
+
+  if (!/^[A-Z]{3}$/.test(normalized)) {
+    throw Object.assign(
+      new Error("Currency must be a valid three-letter code."),
+      { statusCode: 400, code: "INVALID_CURRENCY" }
+    );
+  }
+
+  return normalized;
+}
 
 /**
  * Computes financial ledger balances (Receivables, Revenue, Cash).
+ * All monetary calculations are isolated to one currency.
  */
-export async function getFinancialSummary(tenantDb, { organizationId, from, to }) {
+export async function getFinancialSummary(
+  tenantDb,
+  { organizationId, from, to, currency = "INR" }
+) {
   const Ledger = getLedgerEntryModel(tenantDb);
   const Tx = getBillingTransactionModel(tenantDb);
+  const normalizedCurrency = normalizeCurrency(currency);
 
-  const match = { organizationId };
+  const match = {
+    organizationId,
+    currency: normalizedCurrency
+  };
+
   if (from || to) {
     match.createdAt = {};
     if (from) match.createdAt.$gte = new Date(from);
     if (to) match.createdAt.$lte = new Date(to);
   }
 
-  // 1. Double-Entry Balances by accountType
+  // 1. Double-entry balances by accountType and entryType.
   const ledgerAggregation = await Ledger.aggregate([
     { $match: match },
     {
       $group: {
-        _id: { accountType: "$accountType", entryType: "$entryType", currency: "$currency" },
+        _id: {
+          accountType: "$accountType",
+          entryType: "$entryType"
+        },
         totalAmountMinor: { $sum: "$amountMinor" },
         count: { $sum: 1 }
       }
@@ -34,6 +69,7 @@ export async function getFinancialSummary(tenantDb, { organizationId, from, to }
 
   let totalDebits = 0;
   let totalCredits = 0;
+
   const accounts = {
     receivable: { debit: 0, credit: 0, balanceMinor: 0 },
     revenue: { debit: 0, credit: 0, balanceMinor: 0 },
@@ -52,14 +88,17 @@ export async function getFinancialSummary(tenantDb, { organizationId, from, to }
     if (entryType === "credit") totalCredits += amount;
   }
 
-  // Double-entry calculated balances:
-  // Asset/Receivable balance = Debits - Credits
-  // Revenue balance = Credits - Debits
-  accounts.receivable.balanceMinor = accounts.receivable.debit - accounts.receivable.credit;
-  accounts.revenue.balanceMinor = accounts.revenue.credit - accounts.revenue.debit;
-  accounts.cash.balanceMinor = accounts.cash.debit - accounts.cash.credit;
+  // Double-entry calculated balances.
+  accounts.receivable.balanceMinor =
+    accounts.receivable.debit - accounts.receivable.credit;
 
-  // 2. Transaction status breakdown
+  accounts.revenue.balanceMinor =
+    accounts.revenue.credit - accounts.revenue.debit;
+
+  accounts.cash.balanceMinor =
+    accounts.cash.debit - accounts.cash.credit;
+
+  // 2. Transaction status breakdown in the same currency.
   const txStatusAggregation = await Tx.aggregate([
     { $match: match },
     {
@@ -86,6 +125,7 @@ export async function getFinancialSummary(tenantDb, { organizationId, from, to }
 
   return {
     organizationId,
+    currency: normalizedCurrency,
     trialBalance: {
       totalDebits,
       totalCredits,
@@ -98,11 +138,20 @@ export async function getFinancialSummary(tenantDb, { organizationId, from, to }
 
 /**
  * Computes aggregated usage metrics and consumption trends.
+ * Supports canonical metrics, currency filtering and rational quantities.
  */
-export async function getUsageAnalytics(tenantDb, { organizationId, from, to }) {
+export async function getUsageAnalytics(
+  tenantDb,
+  { organizationId, from, to, currency = "INR" }
+) {
   const Usage = getUsageRecordModel(tenantDb);
+  const normalizedCurrency = normalizeCurrency(currency);
 
-  const match = { organizationId };
+  const match = {
+    organizationId,
+    currency: normalizedCurrency
+  };
+
   if (from || to) {
     match.recordedAt = {};
     if (from) match.recordedAt.$gte = new Date(from);
@@ -112,40 +161,102 @@ export async function getUsageAnalytics(tenantDb, { organizationId, from, to }) 
   const aggregation = await Usage.aggregate([
     { $match: match },
     {
+      $project: {
+        metricType: 1,
+        totalCostMinor: 1,
+        currency: 1,
+        unit: 1,
+        recordedAt: 1,
+        quantity: {
+          $cond: [
+            { $gt: ["$quantityScale", 0] },
+            { $divide: ["$quantityScaled", "$quantityScale"] },
+            "$quantityScaled"
+          ]
+        }
+      }
+    },
+    {
       $group: {
         _id: "$metricType",
         eventCount: { $sum: 1 },
+        totalQuantity: { $sum: "$quantity" },
         totalCostMinor: { $sum: "$totalCostMinor" },
         currency: { $first: "$currency" },
-        unit: { $first: "$unit" }
+        unit: { $first: "$unit" },
+        lastRecordedAt: { $max: "$recordedAt" }
       }
     },
     { $sort: { totalCostMinor: -1 } }
   ]);
 
-  const totalCostMinor = aggregation.reduce((acc, curr) => acc + curr.totalCostMinor, 0);
-  const totalEvents = aggregation.reduce((acc, curr) => acc + curr.eventCount, 0);
+  const aggregatedMap = new Map();
+
+  for (const item of aggregation) {
+    aggregatedMap.set(item._id, item);
+  }
+
+  const byMetric = CANONICAL_METRICS.map((definition) => {
+    const existing = aggregatedMap.get(definition.metricType);
+
+    if (!existing) {
+      return {
+        metricType: definition.metricType,
+        label: definition.label,
+        eventCount: 0,
+        totalQuantity: 0,
+        totalCostMinor: 0,
+        currency: normalizedCurrency,
+        unit: definition.defaultUnit,
+        lastRecordedAt: null
+      };
+    }
+
+    return {
+      metricType: definition.metricType,
+      label: definition.label,
+      eventCount: existing.eventCount,
+      totalQuantity: Math.round(existing.totalQuantity * 10000) / 10000,
+      totalCostMinor: existing.totalCostMinor,
+      currency: existing.currency || normalizedCurrency,
+      unit: existing.unit || definition.defaultUnit,
+      lastRecordedAt: existing.lastRecordedAt
+    };
+  });
+
+  const totalCostMinor = byMetric.reduce(
+    (total, item) => total + item.totalCostMinor,
+    0
+  );
+
+  const totalEvents = byMetric.reduce(
+    (total, item) => total + item.eventCount,
+    0
+  );
 
   return {
     organizationId,
+    currency: normalizedCurrency,
+    reportingPeriod: {
+      from: from ? new Date(from).toISOString() : null,
+      to: to ? new Date(to).toISOString() : null
+    },
     totalEvents,
     totalCostMinor,
-    byMetric: aggregation.map(item => ({
-      metricType: item._id,
-      eventCount: item.eventCount,
-      totalCostMinor: item.totalCostMinor,
-      currency: item.currency,
-      unit: item.unit
-    }))
+    byMetric
   };
 }
 
 /**
  * Returns monthly net revenue for the last six calendar months.
- * Revenue = credits - debits in the revenue ledger account.
+ * Net Revenue = Credits - Debits.
  */
-export async function getMonthlyRevenue(tenantDb, { organizationId, currency = "INR" }) {
+export async function getMonthlyRevenue(
+  tenantDb,
+  { organizationId, currency = "INR" }
+) {
   const Ledger = getLedgerEntryModel(tenantDb);
+  const normalizedCurrency = normalizeCurrency(currency);
 
   const now = new Date();
   const startDate = new Date(now.getFullYear(), now.getMonth() - 5, 1);
@@ -156,7 +267,7 @@ export async function getMonthlyRevenue(tenantDb, { organizationId, currency = "
       $match: {
         organizationId,
         accountType: "revenue",
-        currency: currency.toUpperCase(),
+        currency: normalizedCurrency,
         createdAt: { $gte: startDate, $lt: endDate }
       }
     },
@@ -167,7 +278,8 @@ export async function getMonthlyRevenue(tenantDb, { organizationId, currency = "
           month: { $month: "$createdAt" },
           entryType: "$entryType"
         },
-        totalAmountMinor: { $sum: "$amountMinor" }
+        totalAmountMinor: { $sum: "$amountMinor" },
+        count: { $sum: 1 }
       }
     }
   ]);
@@ -183,6 +295,7 @@ export async function getMonthlyRevenue(tenantDb, { organizationId, currency = "
   }
 
   const months = [];
+  let totalRevenueMinor = 0;
 
   for (let offset = 0; offset < 6; offset++) {
     const date = new Date(
@@ -191,19 +304,38 @@ export async function getMonthlyRevenue(tenantDb, { organizationId, currency = "
       1
     );
 
-    const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
-    const totals = monthlyTotals.get(monthKey) || { credit: 0, debit: 0 };
+    const monthKey = `${date.getFullYear()}-${String(
+      date.getMonth() + 1
+    ).padStart(2, "0")}`;
+
+    const totals = monthlyTotals.get(monthKey) || {
+      credit: 0,
+      debit: 0
+    };
+
+    const grossRevenueMinor = totals.credit;
+    const reversalMinor = totals.debit;
+    const netRevenueMinor = grossRevenueMinor - reversalMinor;
+
+    totalRevenueMinor += netRevenueMinor;
 
     months.push({
       month: date.toLocaleString("en-IN", { month: "short" }),
       monthKey,
-      revenueMinor: totals.credit - totals.debit
+      grossRevenueMinor,
+      reversalMinor,
+      revenueMinor: netRevenueMinor
     });
   }
 
   return {
     organizationId,
-    currency: currency.toUpperCase(),
+    currency: normalizedCurrency,
+    totalRevenueMinor,
+    period: {
+      from: startDate.toISOString(),
+      to: new Date(endDate.getTime() - 1).toISOString()
+    },
     months
   };
 }

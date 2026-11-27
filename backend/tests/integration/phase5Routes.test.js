@@ -90,3 +90,29 @@ test("Analytics Routes: GET /api/v1/analytics/financial requires authentication"
   assert.equal(resNoAuth.status, 401);
   assert.equal(resNoAuth.body.code, "UNAUTHORIZED");
 });
+
+test("Analytics Routes: GET /api/v1/analytics/revenue/monthly requires authentication and validates currency", async () => {
+  const resNoAuth = await request(app).get("/api/v1/analytics/revenue/monthly");
+  assert.equal(resNoAuth.status, 401);
+  assert.equal(resNoAuth.body.code, "UNAUTHORIZED");
+
+  const token = generateToken({
+    userId: "usr_analytics_1",
+    email: "analyst@acme.example",
+    organizationId: "org_acme_001",
+    role: "member"
+  });
+
+  const resInvalidCurrency = await request(app)
+    .get("/api/v1/analytics/revenue/monthly?currency=INVALID")
+    .set("Authorization", `Bearer ${token}`);
+
+  assert.equal(resInvalidCurrency.status, 400);
+  assert.equal(resInvalidCurrency.body.code, "INVALID_CURRENCY");
+});
+
+test("Analytics Routes: GET /api/v1/analytics/usage requires authentication", async () => {
+  const resNoAuth = await request(app).get("/api/v1/analytics/usage");
+  assert.equal(resNoAuth.status, 401);
+  assert.equal(resNoAuth.body.code, "UNAUTHORIZED");
+});
